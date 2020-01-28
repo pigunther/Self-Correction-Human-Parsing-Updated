@@ -24,7 +24,7 @@ import torchvision.transforms as transforms
 from model import network
 from datasets import SCHPDataset, transform_logits
 
-from dataset.datasets import LIPDataSet
+from datasets import LIPDataSet
 
 
 dataset_settings = {

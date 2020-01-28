@@ -11,7 +11,7 @@ import torch.backends.cudnn as cudnn
 import os
 import os.path as osp
 from model import network as Res_Deeplab
-from dataset.datasets import LIPDataSet
+from datasets import LIPDataSet
 import torchvision.transforms as transforms
 import timeit
 from tensorboardX import SummaryWriter
@@ -174,7 +174,6 @@ def main():
 
     # dump_input = torch.rand((args.batch_size, 3, input_size[0], input_size[1]))
     # writer.add_graph(deeplab.cuda(), dump_input.cuda(), verbose=False)
-
     saved_state_dict = torch.load(args.restore_from)
     new_params = deeplab.state_dict().copy()
     for i in saved_state_dict:
@@ -224,6 +223,7 @@ def main():
     for epoch in range(args.start_epoch, args.epochs):
         model.train()
         for i_iter, batch in enumerate(trainloader):
+            print(i_iter, len(batch))
             i_iter += len(trainloader) * epoch
             lr = adjust_learning_rate(optimizer, i_iter, total_iters)
 

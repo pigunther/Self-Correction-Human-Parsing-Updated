@@ -212,7 +212,8 @@ class ResNet(nn.Module):
         super(ResNet, self).__init__()
         self.conv1 = conv3x3(3, 64, stride=2)
         if with_my_bn:
-            self.bn1 = MyBatchNorm2d(64)
+            # self.bn1 = MyBatchNorm2d(64)
+            self.bn1 = ConvBatchNorm2d(64)
         else:
             self.bn1 = nn.BatchNorm2d(64)
         self.relu1 = nn.ReLU(inplace=False)
@@ -242,6 +243,9 @@ class ResNet(nn.Module):
         )
 
         self.with_my_bn = with_my_bn
+        self.heatmap_conv1 = conv3x3(3, 64, stride=2)
+        self.heatmap_conv2 = conv3x3(64, 64, stride=1)
+        self.heatmap_conv3 = conv3x3(64, 64, stride=1)
 
     def _make_layer(self, block, planes, blocks, stride=1, dilation=1, multi_grid=1):
         downsample = None
@@ -264,14 +268,24 @@ class ResNet(nn.Module):
         return nn.Sequential(*layers)
 
     def forward(self, x, heatmaps):
-        print('forward')
-        print(x.shape)
-        print(heatmaps.shape)
+        # print('forward')
+        # print(x.shape)
+        # print(heatmaps.shape)
         # print(x.get_device())
         # print(heatmaps.get_device())
         # Parsing Branch
         if self.with_my_bn:
-            x = self.relu1(self.bn1(self.conv1(x), self.conv1(heatmaps)))
+            # print('heatmpas shape before ', heatmaps.shape)
+            heatmaps = self.heatmap_conv1(heatmaps)
+            # print('heatmpas shape after ', heatmaps.shape)
+            gamma = self.heatmap_conv2(heatmaps)
+            beta = self.heatmap_conv3(heatmaps)
+            x = self.conv1(x)
+            # print(gamma.shape)
+            # gamma = F.interpolate(gamma, x.shape)
+            # beta = F.interpolate(beta, x.shape)
+            x = self.relu1(self.bn1(x, gamma, beta))
+            # x = self.relu1(self.bn1(self.conv1(x), self.conv1(heatmaps)))
         else:
             x = self.relu1(self.bn1(self.conv1(x)))
         x = self.relu2(self.bn2(self.conv2(x)))
@@ -353,3 +367,78 @@ class MyBatchNorm2d(nn.BatchNorm2d):
         print(heatmaps.dtype, self.weight.dtype, self.bias.dtype, y.dtype)
         y = (heatmaps.view(-1, self.weight.shape[0]) @ self.weight.view(-1, 1)) * y + (heatmaps.view(-1, self.weight.shape[0])  @ self.bias.view(-1, 1))
         return y.view(return_shape).transpose(0,1)
+
+class ConvBatchNorm2d(nn.BatchNorm2d):
+    # def forward(self, x, gamma=None, beta=None):
+    #     self._check_input_dim(x)
+    #     y = x.transpose(0, 1)
+    #
+    #     print(y.shape)
+    #     return_shape = y.shape
+    #     y = y.contiguous().view(x.size(1), -1)
+    #     mu = y.mean(dim=1)
+    #     sigma2 = y.var(dim=1)
+    #     # y = y - mu.view(-1, 1)
+    #     # y = y / (sigma2.view(-1, 1) ** .5 + self.eps)
+    #     if self.training is not True:
+    #
+    #         y = y - self.running_mean.view(-1, 1)
+    #         y = y / (self.running_var.view(-1, 1)**.5 + self.eps)
+    #     else:
+    #         if self.track_running_stats is True:
+    #             with torch.no_grad():
+    #                 print('ruunig_mean. momentum. mu', self.running_mean.shape, self.momentum, mu.shape)
+    #                 print(y.shape, self.running_mean.shape, self.running_var.shape)
+    #                 self.running_mean = (1-self.momentum)*self.running_mean + self.momentum*mu
+    #                 self.running_var = (1-self.momentum)*self.running_var + self.momentum*sigma2
+    #         y = y - mu.view(-1,1)
+    #         y = y / (sigma2.view(-1,1)**.5 + self.eps)
+    #     y = y * (gamma + 1) + beta
+    #     return y.view(return_shape).transpose(0, 1)
+
+    def __init__(self, num_features, momentum=0.9, epsilon=1e-05):
+        '''
+        input: assume 4D input (mini_batch_size, # channel, w, h)
+        momentum: momentum for exponential average
+        '''
+        super(nn.BatchNorm2d, self).__init__(num_features)
+        self.momentum = momentum
+        # self.run_mode = 0  # 0: training, 1: testing
+        self.insize = num_features
+        self.epsilon = epsilon
+
+        # initialize weight(gamma), bias(beta), running mean and variance
+        self.register_buffer('running_mean',
+                             torch.zeros(self.insize))  # this solves cpu and cuda mismatch location issue
+        self.register_buffer('running_var', torch.ones(self.insize))
+
+        # self.running_mean = torch.zeros(self.insize) # torch.zeros(self.insize)
+        # self.running_var = torch.ones(self.insize)
+
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        self.running_mean.zero_()
+        self.running_var.fill_(1)
+
+    def forward(self, x, gamma=None, beta=None):
+        if self.training is True:
+            mean = x.mean([0, 2, 3])  # along channel axis
+            var = x.var([0, 2, 3])
+            if self.track_running_stats is True:
+                with torch.no_grad():
+                    self.running_mean = (self.momentum * self.running_mean) + (1.0 - self.momentum) * mean  # .to(input.device)
+                    self.running_var = (self.momentum * self.running_var) + (1.0 - self.momentum) * (
+                                x.shape[0] / (x.shape[0] - 1) * var)
+
+        else:
+            mean = self.running_mean
+            var = self.running_var
+
+        current_mean = mean.view([1, self.insize, 1, 1]).expand_as(x)
+        current_var = var.view([1, self.insize, 1, 1]).expand_as(x)
+        x = x - current_mean
+        x = x / ((current_var + self.eps) ** .5)
+        # print(x.shape, gamma.shape, beta.shape)
+        x = x * (gamma + 1) + beta
+        return x

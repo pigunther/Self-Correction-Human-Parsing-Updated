@@ -15,3 +15,5 @@ python3 eval.py --data-dir ${CS_PATH} \
        --restore-from ${SNAPSHOT_FROM}\
        --dataset ${DATASET}\
        --num-classes ${NUM_CLASSES}
+
+ # sed -i -e 's/\r$//' run_evaluate.sh

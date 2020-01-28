@@ -13,7 +13,7 @@ INPUT_SIZE='384,384'
 SNAPSHOT_DIR='./snapshots1'
 DATASET='train'
 NUM_CLASSES=20
-EPOCHS=50
+EPOCHS=150
 
 if [[ ! -e ${SNAPSHOT_DIR} ]]; then
     mkdir -p  ${SNAPSHOT_DIR}
@@ -34,3 +34,4 @@ python3 train.py --data-dir ${CS_PATH} \
 #python evaluate_custom.py
 #--random-mirror\
 #       --random-scale\
+# sed -i -e 's/\r$//' run.sh

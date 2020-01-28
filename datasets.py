@@ -23,7 +23,7 @@ import pandas as pd
 
 from scipy.stats import multivariate_normal
 from torch.utils import data
-from dataset.target_generation import generate_edge
+from target_generation import generate_edge
 from utils.transforms import get_affine_transform
 
 
@@ -157,7 +157,7 @@ class SCHPDataset(data.Dataset):
 
 
 class LIPDataSet(data.Dataset):
-    def __init__(self, root, dataset, crop_size=[473, 473], scale_factor=0.25,
+    def __init__(self, root, dataset, crop_size=[384, 384], scale_factor=0.25,
                  rotation_factor=30, ignore_label=255, transform=None, drop_factor=100):
         """
         :rtype:
@@ -209,6 +209,9 @@ class LIPDataSet(data.Dataset):
         parsing_anno_path = os.path.join(self.root, self.dataset + '_segmentations', im_name + '.png')
 
         im = cv2.imread(im_path, cv2.IMREAD_COLOR)
+        if im.shape[1] < self.crop_size[0] or im.shape[2] < self.crop_size[1]:
+            # resize_shape = (im.shape[0], self.crop_size[0], self.crop_size[1])
+            im = cv2.resize(im, tuple(self.crop_size))
         h, w, _ = im.shape
         parsing_anno = np.zeros((h, w), dtype=np.long)
 
@@ -245,7 +248,7 @@ class LIPDataSet(data.Dataset):
         # print(kp, im_name)
         kp = kp[1:]
         # print(kp)
-        heatmap_shape = 64
+        heatmap_shape = h
         heatmap = get_train_kp_heatmap(im.shape, kp)
         if heatmap is None:
             # print('#'*15)
@@ -282,6 +285,7 @@ class LIPDataSet(data.Dataset):
             #             # heatmap = resize(heatmap, (heatmap_shape, heatmap_shape), anti_aliasing=True)
         else:
             heatmap = np.eye(heatmap_shape)
+            heatmap = cv2.merge((heatmap, heatmap, heatmap)).transpose(2, 0, 1)
         if self.transform:
             input = self.transform(input)
             heatmap = torch.from_numpy(heatmap).type(torch.float32)
@@ -312,6 +316,28 @@ class LIPDataSet(data.Dataset):
 
             label_parsing = torch.from_numpy(label_parsing)
             label_edge = torch.from_numpy(label_edge)
+            # print('get from dataset:')
+            # print(input.shape, label_parsing.shape, label_edge.shape, heatmap.shape, im_name)
+            # for check in [input, heatmap]:
+            #     sh = check.shape
+            #     if sh[0] != 3:
+            #         print(sh, input.shape, label_parsing.shape, label_edge.shape, heatmap.shape, im_name)
+            #         raise NotImplementedError('not 3 ')
+            #     if sh[1] != 384:
+            #         print(sh, input.shape, label_parsing.shape, label_edge.shape, heatmap.shape, im_name)
+            #         # raise NotImplementedError('not 384 1')
+            #     if sh[2] != 384:
+            #         print(sh, input.shape, label_parsing.shape, label_edge.shape, heatmap.shape, im_name)
+            #         # raise NotImplementedError('not 384 2')
+            # for check in [label_parsing, label_edge]:
+            #     sh = check.shape
+            #     if sh[0] != 384:
+            #         print(sh, input.shape, label_parsing.shape, label_edge.shape, heatmap.shape, im_name)
+            #         # raise NotImplementedError('not 384 3')
+            #     if sh[1] != 384:
+            #         print(sh, input.shape, label_parsing.shape, label_edge.shape, heatmap.shape, im_name)
+            #         # raise NotImplementedError('not 384 4')
+
 
             return input, label_parsing, label_edge, heatmap, meta
 
