@@ -74,15 +74,21 @@ class Bottleneck(nn.Module):
         residual = x
 
         out = self.conv1(x)
+        print('Bottleneck 1: ', out.shape)
         out = self.bn1(out)
+        print('Bottleneck 1: ', out.shape)
         out = self.relu(out)
 
         out = self.conv2(out)
+        print('Bottleneck 2: ', out.shape)
         out = self.bn2(out)
+        print('Bottleneck 2: ', out.shape)
         out = self.relu(out)
 
         out = self.conv3(out)
+        print('Bottleneck 3: ', out.shape)
         out = self.bn3(out)
+        print('Bottleneck 3: ', out.shape)
 
         if self.downsample is not None:
             residual = self.downsample(x)
@@ -211,13 +217,13 @@ class ResNet(nn.Module):
 
         super(ResNet, self).__init__()
         self.conv1 = conv3x3(3, 64, stride=2)
-        self.bn1 = nn.BatchNorm2d(64)
+        self.bn1 = MyBatchNorm2d(384)
         self.relu1 = nn.ReLU(inplace=False)
         self.conv2 = conv3x3(64, 64)
-        self.bn2 = nn.BatchNorm2d(64)
+        self.bn2 = MyBatchNorm2d(192)
         self.relu2 = nn.ReLU(inplace=False)
         self.conv3 = conv3x3(64, 128)
-        self.bn3 = nn.BatchNorm2d(128)
+        self.bn3 = MyBatchNorm2d(128)
         self.relu3 = nn.ReLU(inplace=False)
 
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
@@ -258,24 +264,60 @@ class ResNet(nn.Module):
 
         return nn.Sequential(*layers)
 
-    def forward(self, x):
+    def forward(self, x, heatmaps):
         # Parsing Branch
-        x = self.relu1(self.bn1(self.conv1(x)))
-        x = self.relu2(self.bn2(self.conv2(x)))
-        x = self.relu3(self.bn3(self.conv3(x)))
+        if heatmaps is None:
+            print('#'*15)
+            print('#'*15)
+            print('none in start in forward')
+            print('#'*15)
+            print('#'*15)
+        print('main ', heatmaps.shape, x.shape)
+
+        heatmap_right = torch.zeros((heatmaps.shape[0], 3, heatmaps.shape[1], heatmaps.shape[2])).to('cuda')
+        if heatmap_right is None:
+            print('#'*15)
+            print('heatmap_right none in forward')
+            print('#'*15)
+        for i in range(3):
+            heatmap_right[:, i, :, :] = heatmaps
+        with torch.no_grad():
+            heatmap_right = self.conv1(heatmap_right)
+        if heatmap_right is None:
+            print('#'*15)
+            print('heatmap_right none 1 transform')
+            print('#'*15)
+        print('Main 1: ', heatmap_right.shape, x.shape) # batch_size * 3 * 384 * 384
+        x = self.relu1(self.bn1(self.conv1(x), heatmap_right))
+        print('Main 2: ', x.shape) # batch_size * 64 * 192 * 192
+        with torch.no_grad():
+            heatmap_right = self.conv2(heatmap_right)
+        x = self.relu2(self.bn2(self.conv2(x), heatmap_right))
+        print('Main 3: ', x.shape) # batch_size * 64 * 192 * 192
+
+        with torch.no_grad():
+            heatmap_right = self.conv3(heatmap_right)
+        x = self.relu3(self.bn3(self.conv3(x), heatmap_right))
+        print('Main 4: ', x.shape) # batch_size * 128 * 192 * 192
         x1 = self.maxpool(x)
+        print('Main 5: ', x.shape) # batch_size * 128 * 192 * 192
         x2 = self.layer1(x1)
+        print('Main 6: ', x.shape)
         x3 = self.layer2(x2)
+        print('Main 7: ', x.shape)
         x4 = self.layer3(x3)
+        print('Main 8: ', x.shape)
         x5 = self.layer4(x4)
+        print('Main 9: ', x.shape)
         x = self.context_encoding(x5)
+        print('Main 10: ', x.shape)
         parsing_result, parsing_fea = self.decoder(x, x2)
         # Edge Branch
         edge_result, edge_fea = self.edge(x2, x3, x4)
         # Fusion Branch
         x = torch.cat([parsing_fea, edge_fea], dim=1)
         fusion_result = self.fushion(x)
-        return fusion_result
+        return [[parsing_result, fusion_result], [edge_result]]
 
 
 def initialize_pretrained_model(model, settings, pretrained='./models/resnet101-imagenet.pth'):
@@ -290,7 +332,7 @@ def initialize_pretrained_model(model, settings, pretrained='./models/resnet101-
         new_params = model.state_dict().copy()
         for i in saved_state_dict:
             i_parts = i.split('.')
-            if not i_parts[0] == 'fc':
+            if i_parts[0] != 'fc' and i_parts[0][:2] != 'bn':
                 new_params['.'.join(i_parts[0:])] = saved_state_dict[i]
         model.load_state_dict(new_params)
 
@@ -301,3 +343,75 @@ def network(num_classes=20, pretrained='./models/resnet101-imagenet.pth'):
     initialize_pretrained_model(model, settings, pretrained)
     return model
 
+
+class MyBatchNorm2d(nn.BatchNorm2d):
+    def forward(self, x, heatmaps=None):
+        self._check_input_dim(x)
+        y = x.transpose(0,1)
+        return_shape = y.shape
+        y = y.contiguous().view(x.size(1), -1)
+        mu = y.mean(dim=1)
+        sigma2 = y.var(dim=1)
+        if self.training is not True:
+            y = y - self.running_mean.view(-1, 1)
+            y = y / (self.running_var.view(-1, 1)**.5 + self.eps)
+        else:
+            if self.track_running_stats is True:
+                with torch.no_grad():
+                    print('ruunig_mean. momentum. mu', self.running_mean.shape, self.momentum, mu.shape)
+                    self.running_mean = (1-self.momentum)*self.running_mean + self.momentum*mu
+                    self.running_var = (1-self.momentum)*self.running_var + self.momentum*sigma2
+            y = y - mu.view(-1,1)
+            y = y / (sigma2.view(-1,1)**.5 + self.eps)
+        print('weight in batchnorm ', self.weight.shape, y.shape)
+        if heatmaps is None:
+            print('#'*15)
+            print('#'*15)
+            print('#'*15)
+            print('#'*15)
+        print(heatmaps.shape, self.weight.shape, y.shape)
+        print((heatmaps.view(-1, self.weight.shape[0]) @ self.weight.view(-1, 1)).shape)
+        y = (heatmaps @ self.weight.view(-1, 1)) * y + (heatmaps  @ self.bias.view(-1, 1))
+        return y.view(return_shape).transpose(0,1)
+
+
+class My2BatchNorm2d(nn.BatchNorm2d):
+    def __init__(self, num_features, eps=1e-5, momentum=0.1,
+                 affine=True, track_running_stats=True):
+        super(MyBatchNorm2d, self).__init__(
+            num_features, eps, momentum, affine, track_running_stats)
+
+    def forward(self, input):
+        self._check_input_dim(input)
+
+        exponential_average_factor = 0.0
+
+        if self.training and self.track_running_stats:
+            if self.num_batches_tracked is not None:
+                self.num_batches_tracked += 1
+                if self.momentum is None:  # use cumulative moving average
+                    exponential_average_factor = 1.0 / float(self.num_batches_tracked)
+                else:  # use exponential moving average
+                    exponential_average_factor = self.momentum
+
+        # calculate running estimates
+        if self.training:
+            mean = input.mean([0, 2, 3])
+            # use biased var in train
+            var = input.var([0, 2, 3], unbiased=False)
+            n = input.numel() / input.size(1)
+            with torch.no_grad():
+                self.running_mean = exponential_average_factor * mean\
+                    + (1 - exponential_average_factor) * self.running_mean
+                # update running_var with unbiased var
+                self.running_var = exponential_average_factor * var * n / (n - 1)\
+                    + (1 - exponential_average_factor) * self.running_var
+        else:
+            mean = self.running_mean
+            var = self.running_var
+
+        input = (input - mean[None, :, None, None]) / (torch.sqrt(var[None, :, None, None] + self.eps))
+        if self.affine:
+            input = input * self.weight[None, :, None, None] + self.bias[None, :, None, None]
+
+        return input

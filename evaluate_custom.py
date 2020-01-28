@@ -122,6 +122,7 @@ def main():
             h = meta['height'].numpy()[0]
 
             output = model(image.cuda())
+            output = output[0][1]
             upsample = torch.nn.Upsample(size=input_size, mode='bilinear', align_corners=True)
             upsample_output = upsample(output)
             upsample_output = upsample_output.squeeze()
@@ -142,3 +143,5 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+# python3 evaluate.py --dataset lip --restore-weight snapshots/LIP_epoch_133.pth --input input --output output
