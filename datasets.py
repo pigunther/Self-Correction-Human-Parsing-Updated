@@ -19,6 +19,13 @@ import numpy as np
 
 import torch
 from torch.utils import data
+import pandas as pd
+
+from scipy.stats import multivariate_normal
+from torch.utils import data
+from dataset.target_generation import generate_edge
+from utils.transforms import get_affine_transform
+
 
 
 def get_3rd_point(a, b):
@@ -147,3 +154,184 @@ class SCHPDataset(data.Dataset):
         }
 
         return input, meta
+
+
+class LIPDataSet(data.Dataset):
+    def __init__(self, root, dataset, crop_size=[473, 473], scale_factor=0.25,
+                 rotation_factor=30, ignore_label=255, transform=None, drop_factor=100):
+        """
+        :rtype:
+        """
+        self.root = root
+        self.aspect_ratio = crop_size[1] * 1.0 / crop_size[0]
+        self.crop_size = np.asarray(crop_size)
+        self.ignore_label = ignore_label
+        self.scale_factor = scale_factor
+        self.rotation_factor = rotation_factor
+        self.flip_prob = 0.5
+        self.flip_pairs = [[0, 5], [1, 4], [2, 3], [11, 14], [12, 13], [10, 15]]
+        self.transform = transform
+        self.dataset = dataset
+        self.keypoints = pd.read_csv(root + f'/TrainVal_pose_annotations/lip_{dataset}_set.csv', header=None)
+
+        list_path = os.path.join(self.root, self.dataset + '_id.txt')
+
+        self.im_list = [i_id.strip() for i_id in open(list_path)]
+        if drop_factor is not None:
+            self.im_list = self.im_list[::drop_factor]
+        self.drop_factor = drop_factor
+        self.number_samples = len(self.im_list)
+
+    def __len__(self):
+        return self.number_samples
+
+    def _box2cs(self, box):
+        x, y, w, h = box[:4]
+        return self._xywh2cs(x, y, w, h)
+
+    def _xywh2cs(self, x, y, w, h):
+        center = np.zeros((2), dtype=np.float32)
+        center[0] = x + w * 0.5
+        center[1] = y + h * 0.5
+        if w > self.aspect_ratio * h:
+            h = w * 1.0 / self.aspect_ratio
+        elif w < self.aspect_ratio * h:
+            w = h * self.aspect_ratio
+        scale = np.array([w * 1.0, h * 1.0], dtype=np.float32)
+
+        return center, scale
+
+    def __getitem__(self, index):
+        # Load training image
+        im_name = self.im_list[index]
+
+        im_path = os.path.join(self.root, self.dataset + '_images', im_name + '.jpg')
+        parsing_anno_path = os.path.join(self.root, self.dataset + '_segmentations', im_name + '.png')
+
+        im = cv2.imread(im_path, cv2.IMREAD_COLOR)
+        h, w, _ = im.shape
+        parsing_anno = np.zeros((h, w), dtype=np.long)
+
+        # Get center and scale
+        center, s = self._box2cs([0, 0, w - 1, h - 1])
+        r = 0
+
+        if self.dataset != 'test':
+            parsing_anno = cv2.imread(parsing_anno_path, cv2.IMREAD_GRAYSCALE)
+
+            if self.dataset == 'train' or self.dataset == 'trainval':
+
+                sf = self.scale_factor
+                rf = self.rotation_factor
+                s = s * np.clip(np.random.randn() * sf + 1, 1 - sf, 1 + sf)
+                r = np.clip(np.random.randn() * rf, -rf * 2, rf * 2) \
+                    if random.random() <= 0.6 else 0
+
+                if random.random() <= self.flip_prob:
+                    im = im[:, ::-1, :]
+                    parsing_anno = parsing_anno[:, ::-1]
+
+                    center[0] = im.shape[1] - center[0] - 1
+                    right_idx = [15, 17, 19]
+                    left_idx = [14, 16, 18]
+                    for i in range(0, 3):
+                        right_pos = np.where(parsing_anno == right_idx[i])
+                        left_pos = np.where(parsing_anno == left_idx[i])
+                        parsing_anno[right_pos[0], right_pos[1]] = left_idx[i]
+                        parsing_anno[left_pos[0], left_pos[1]] = right_idx[i]
+
+        trans = get_affine_transform(center, s, r, self.crop_size)
+        kp = self.keypoints.loc[self.keypoints[0] == im_name+'.jpg'].values[0]
+        # print(kp, im_name)
+        kp = kp[1:]
+        # print(kp)
+        heatmap_shape = 64
+        heatmap = get_train_kp_heatmap(im.shape, kp)
+        if heatmap is None:
+            # print('#'*15)
+            # print('#'*15)
+            # print(im_name)
+            # print('#'*15)
+            # print('#'*15)
+            heatmap = get_train_kp_heatmap(im.shape, kp)
+            # if heatmap is None:
+                # print('#' * 15)
+                # print('#' * 15)
+                # print(im_name, index)
+                # print(kp)
+                # print('#' * 15)
+                # print('#' * 15)
+
+        input = cv2.warpAffine(
+            im,
+            trans,
+            (int(self.crop_size[1]), int(self.crop_size[0])),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=(0, 0, 0))
+        if heatmap is not None:
+            heatmap = heatmap.astype(np.uint8)
+            heatmap = cv2.warpAffine(
+                heatmap,
+                trans,
+                (int(self.crop_size[1]), int(self.crop_size[0])),
+                flags=cv2.INTER_LINEAR,
+                borderMode=cv2.BORDER_CONSTANT,
+                borderValue=(0, 0, 0))
+            heatmap = cv2.merge((heatmap,heatmap,heatmap)).transpose(2,0,1)
+            #             # heatmap = resize(heatmap, (heatmap_shape, heatmap_shape), anti_aliasing=True)
+        else:
+            heatmap = np.eye(heatmap_shape)
+        if self.transform:
+            input = self.transform(input)
+            heatmap = torch.from_numpy(heatmap).type(torch.float32)
+
+        meta = {
+            'name': im_name,
+            'center': center,
+            'height': h,
+            'width': w,
+            'scale': s,
+            'rotation': r,
+            'index': index
+        }
+
+        if self.dataset != 'train':
+            return input, meta, heatmap
+        else:
+
+            label_parsing = cv2.warpAffine(
+                parsing_anno,
+                trans,
+                (int(self.crop_size[1]), int(self.crop_size[0])),
+                flags=cv2.INTER_NEAREST,
+                borderMode=cv2.BORDER_CONSTANT,
+                borderValue=(255))
+
+            label_edge = generate_edge(label_parsing)
+
+            label_parsing = torch.from_numpy(label_parsing)
+            label_edge = torch.from_numpy(label_edge)
+
+            return input, label_parsing, label_edge, heatmap, meta
+
+
+def get_train_kp_heatmap(shape, kp):
+    x = [kp[i] for i in range(0, len(kp), 3)]
+    y = [kp[i] for i in range(1, len(kp), 3)]
+    bad_indexes = set()
+    for i in range(len(x)):
+        if np.isnan(x[i]) or np.isnan(y[i]):
+            bad_indexes.add(i)
+
+    x = [x[i] for i in range(len(x)) if i not in bad_indexes]
+    y = [y[i] for i in range(len(y)) if i not in bad_indexes]
+    pos = np.dstack(np.mgrid[0:shape[0]:1, 0:shape[1]:1])
+    heatmap = None
+    for x_i, y_i in zip(x, y):
+        rv = multivariate_normal(mean=[y_i, x_i], cov=40)
+        if heatmap is None:
+            heatmap = rv.pdf(pos) * 100
+        else:
+            heatmap += rv.pdf(pos) * 100
+    return heatmap
