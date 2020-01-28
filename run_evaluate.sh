@@ -1,6 +1,6 @@
 #!/bin/bash
 
-CS_PATH='./dataset/LIP'
+CS_PATH='../lip-dataset/LIP'
 BS=6
 GPU_IDS='0'
 INPUT_SIZE='384,384'

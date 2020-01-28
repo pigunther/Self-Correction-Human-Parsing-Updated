@@ -21,7 +21,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 import torchvision.transforms as transforms
 
-from model1 import network
+from model import network
 from datasets import SCHPDataset, transform_logits
 
 from dataset.datasets import LIPDataSet

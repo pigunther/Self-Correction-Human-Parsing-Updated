@@ -3,12 +3,12 @@ uname -a
 #date
 #env
 date
-CS_PATH='./dataset/LIP'
+CS_PATH='../lip-dataset/LIP'
 LR=1e-3
 WD=5e-4
 BS=6
 GPU_IDS=1,2,3
-RESTORE_FROM='./dataset/resnet101-imagenet.pth'
+RESTORE_FROM='../lip-dataset/resnet101-imagenet.pth'
 INPUT_SIZE='384,384'
 SNAPSHOT_DIR='./snapshots1'
 DATASET='train'

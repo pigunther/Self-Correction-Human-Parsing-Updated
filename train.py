@@ -10,7 +10,7 @@ import torchvision.utils as vutils
 import torch.backends.cudnn as cudnn
 import os
 import os.path as osp
-from model1 import network as Res_Deeplab
+from model import network as Res_Deeplab
 from dataset.datasets import LIPDataSet
 import torchvision.transforms as transforms
 import timeit

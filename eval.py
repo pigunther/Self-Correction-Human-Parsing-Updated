@@ -4,7 +4,7 @@ import torch
 
 torch.multiprocessing.set_start_method("spawn", force=True)
 from torch.utils import data
-from model1 import network as Res_Deeplab
+from model import network as Res_Deeplab
 from dataset.datasets import LIPDataSet
 import os
 import torchvision.transforms as transforms
