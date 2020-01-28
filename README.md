@@ -1,3 +1,5 @@
+There should be 'lip-dataset' folder on the same level as the main project folder
+
 # Self Correction for Human Parsing
 
 An out-of-box human parsing representation extractor. Also the 3rd LIP challenge winner solution!
