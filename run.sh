@@ -10,10 +10,11 @@ BS=6
 GPU_IDS=1,2,3
 RESTORE_FROM='../lip-dataset/resnet101-imagenet.pth'
 INPUT_SIZE='384,384'
-SNAPSHOT_DIR='./snapshots1'
+SNAPSHOT_DIR='./snapshots_simple'
 DATASET='train'
 NUM_CLASSES=20
-EPOCHS=150
+EPOCHS=50
+WITH_MY_BN=0
 
 if [[ ! -e ${SNAPSHOT_DIR} ]]; then
     mkdir -p  ${SNAPSHOT_DIR}
@@ -29,7 +30,8 @@ python3 train.py --data-dir ${CS_PATH} \
        --snapshot-dir ${SNAPSHOT_DIR}\
        --dataset ${DATASET}\
        --num-classes ${NUM_CLASSES} \
-       --epochs ${EPOCHS}
+       --epochs ${EPOCHS} \
+       --with_my_bn ${WITH_MY_BN}
 
 #python evaluate_custom.py
 #--random-mirror\

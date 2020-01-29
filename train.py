@@ -94,6 +94,8 @@ def get_arguments():
                         help="choose the number of recurrence.")
     parser.add_argument("--epochs", type=int, default=150,
                         help="choose the number of recurrence.")
+    parser.add_argument("--with_my_bn", type=int, default=False,
+                        help="choose the number of recurrence.")
     return parser.parse_args()
 
 
@@ -170,7 +172,7 @@ def main():
     torch.backends.cudnn.deterministic = False
     torch.backends.cudnn.enabled = True
 
-    deeplab = Res_Deeplab(num_classes=args.num_classes, pretrained=None, batch_size=args.batch_size, with_my_bn=True)
+    deeplab = Res_Deeplab(num_classes=args.num_classes, pretrained=None, batch_size=args.batch_size, with_my_bn=args.with_my_bn)
 
     # dump_input = torch.rand((args.batch_size, 3, input_size[0], input_size[1]))
     # writer.add_graph(deeplab.cuda(), dump_input.cuda(), verbose=False)
@@ -201,7 +203,7 @@ def main():
         normalize,
     ])
 
-    trainloader = data.DataLoader(LIPDataSet(args.data_dir, args.dataset, crop_size=input_size, transform=transform),
+    trainloader = data.DataLoader(LIPDataSet(args.data_dir, args.dataset, crop_size=input_size, transform=transform, rotation_factor=0, flip_prob=-0.1, scale_factor=0),
                                   batch_size=args.batch_size * len(gpus), shuffle=True, num_workers=2,
                                   pin_memory=True, drop_last=True)
 

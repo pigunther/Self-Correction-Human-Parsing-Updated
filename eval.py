@@ -5,7 +5,7 @@ import torch
 torch.multiprocessing.set_start_method("spawn", force=True)
 from torch.utils import data
 from model import network as Res_Deeplab
-from datasets import LIPDataSet
+from datasets import LIPDataSet, transform_logits
 import os
 import torchvision.transforms as transforms
 from utils.miou import compute_mean_ioU
@@ -42,6 +42,8 @@ def get_arguments():
                         help="choose gpu device.")
     parser.add_argument("--input-size", type=str, default=INPUT_SIZE,
                         help="Comma-separated string with height and width of images.")
+    parser.add_argument("--with_my_bn", type=int, default=False,
+                        help="choose the number of recurrence.")
 
     return parser.parse_args()
 
@@ -54,6 +56,8 @@ def valid(model, valloader, input_size, num_samples, gpus):
 
     scales = np.zeros((num_samples, 2), dtype=np.float32)
     centers = np.zeros((num_samples, 2), dtype=np.int32)
+    widths = np.zeros((num_samples), dtype=np.int32)
+    heights = np.zeros((num_samples), dtype=np.int32)
 
     idx = 0
     interp = torch.nn.Upsample(size=(input_size[0], input_size[1]), mode='bilinear', align_corners=True)
@@ -66,8 +70,12 @@ def valid(model, valloader, input_size, num_samples, gpus):
 
             c = meta['center'].numpy()
             s = meta['scale'].numpy()
+            w = meta['width'].numpy()
+            h = meta['height'].numpy()
             scales[idx:idx + num_images, :] = s[:, :]
             centers[idx:idx + num_images, :] = c[:, :]
+            widths[idx:idx + num_images] = w
+            heights[idx:idx + num_images] = h
 
             outputs = model(image.cuda(), heatmaps)
             if gpus > 1:
@@ -76,7 +84,10 @@ def valid(model, valloader, input_size, num_samples, gpus):
                     nums = len(parsing)
                     parsing = interp(parsing).data.cpu().numpy()
                     parsing = parsing.transpose(0, 2, 3, 1)  # NCHW NHWC
-                    parsing_preds[idx:idx + nums, :, :] = np.asarray(np.argmax(parsing, axis=3), dtype=np.uint8)
+                    for i_ in range(nums):
+
+                        parsing_preds[idx+i_] = transform_logits(parsing.data.cpu().numpy(), centers[idx+i_], scales[idx+i_], heights[idx+i_], widths[idx+i_], input_size=input_size)
+                        parsing_preds[idx+i_] = np.asarray(np.argmax(parsing_preds[idx+i_] , axis=2), dtype=np.uint8)
 
                     idx += nums
             else:
@@ -103,7 +114,7 @@ def main():
 
     input_size = (h, w)
 
-    model = Res_Deeplab(num_classes=args.num_classes, pretrained=None, with_my_bn=True, batch_size=args.batch_size).cuda()
+    model = Res_Deeplab(num_classes=args.num_classes, pretrained=None, with_my_bn=args.with_my_bn, batch_size=args.batch_size).cuda()
     model = torch.nn.DataParallel(model)
     state_dict = torch.load(args.restore_from)
     model.load_state_dict(state_dict)
@@ -116,8 +127,8 @@ def main():
         transforms.ToTensor(),
         normalize,
     ])
-
-    lip_dataset = LIPDataSet(args.data_dir, 'val', crop_size=input_size, transform=transform, drop_factor=None)
+    drop_factor = 1000
+    lip_dataset = LIPDataSet(args.data_dir, 'val', crop_size=input_size, transform=transform, drop_factor=drop_factor, rotation_factor=0, flip_prob=-0.1, scale_factor=0)
     num_samples = len(lip_dataset)
 
     valloader = data.DataLoader(lip_dataset, batch_size=args.batch_size * len(gpus),
@@ -141,8 +152,8 @@ def main():
     model.cuda()
 
     parsing_preds, scales, centers = valid(model, valloader, input_size, num_samples, len(gpus))
-
-    mIoU = compute_mean_ioU(parsing_preds, scales, centers, args.num_classes, args.data_dir, input_size, drop_factor=None)
+    print(len(parsing_preds), scales, centers)
+    mIoU = compute_mean_ioU(parsing_preds, scales, centers, args.num_classes, args.data_dir, input_size, drop_factor=drop_factor)
 
     print(mIoU)
 

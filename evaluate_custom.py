@@ -61,12 +61,14 @@ def get_arguments():
     parser.add_argument("--output", type=str, default='', help="path of output image folder.")
     parser.add_argument("--logits", action='store_true', default=False, help="whether to save the logits.")
 
-    parser.add_argument("--data-dir", type=str, default='./dataset/LIP',
+    parser.add_argument("--data-dir", type=str, default='../lip-dataset/LIP',
                         help="Path to the directory containing the dataset.")
     parser.add_argument("--batch-size", type=int, default=6,
                         help="Number of images sent to the network in one step.")
     parser.add_argument("--gpu", type=str, default='1,2,3',
                         help="choose gpu device.")
+    parser.add_argument("--with_my_bn", type=int, default=False,
+                        help="choose the number of recurrence.")
 
     return parser.parse_args()
 
@@ -105,7 +107,7 @@ def main():
     input_size = dataset_settings[args.dataset]['input_size']
     label = dataset_settings[args.dataset]['label']
 
-    model = network(num_classes=num_classes, pretrained=None, with_my_bn=True, batch_size=args.batch_size).cuda()
+    model = network(num_classes=num_classes, pretrained=None, with_my_bn=args.with_my_bn, batch_size=args.batch_size).cuda()
     model = nn.DataParallel(model)
     state_dict = torch.load(args.restore_weight)
     model.load_state_dict(state_dict)
@@ -115,7 +117,7 @@ def main():
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.406, 0.456, 0.485], std=[0.225, 0.224, 0.229])
     ])
-    lip_dataset = LIPDataSet(args.data_dir, 'val', crop_size=input_size, transform=transform)
+    lip_dataset = LIPDataSet(args.data_dir, 'val', crop_size=input_size, transform=transform, rotation_factor=0, flip_prob=-0.1, scale_factor=0)
     # dataset = SCHPDataset(root=args.input, input_size=input_size, transform=transform)
     dataloader = DataLoader(lip_dataset, batch_size=args.batch_size * len(gpus), drop_last=True)
 
@@ -164,6 +166,6 @@ if __name__ == '__main__':
     main()
 
 # python3 evaluate_custom.py --dataset lip --restore-weight snapshots/LIP_epoch_133.pth --input input --output output
-# python3 evaluate_custom.py --dataset lip --restore-weight snapshots_simple/LIP_epoch_49.pth --input input --output output
+# python3 evaluate_custom.py --dataset lip --restore-weight snapshots_simple/LIP_epoch_49.pth --input input --output output --with_my_bn 0
 
-# python3 evaluate_custom.py --dataset lip --restore-weight snapshots1/LIP_epoch_49.pth --input input --output output
+# python3 evaluate_custom.py --dataset lip --restore-weight snapshots1/LIP_epoch_49.pth --input input --output output --with_my_bn 1

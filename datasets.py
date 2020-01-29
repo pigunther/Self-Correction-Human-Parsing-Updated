@@ -24,7 +24,8 @@ import pandas as pd
 from scipy.stats import multivariate_normal
 from torch.utils import data
 from target_generation import generate_edge
-from utils.transforms import get_affine_transform
+import torchvision.transforms as transforms
+
 
 
 
@@ -53,20 +54,22 @@ def get_affine_transform(center,
         print(scale)
         scale = np.array([scale, scale])
 
-    src_w = scale[0]
+    scale_tmp = scale
+
+    src_h = scale_tmp[0]
     dst_w = output_size[1]
     dst_h = output_size[0]
 
     rot_rad = np.pi * rot / 180
-    src_dir = get_dir([0, src_w * -0.5], rot_rad)
-    dst_dir = np.array([0, (dst_w - 1) * -0.5], np.float32)
+    src_dir = get_dir([0, src_h * -0.5], rot_rad)
+    dst_dir = np.array([0, dst_h * -0.5], np.float32)
 
     src = np.zeros((3, 2), dtype=np.float32)
     dst = np.zeros((3, 2), dtype=np.float32)
-    src[0, :] = center + scale * shift
-    src[1, :] = center + src_dir + scale * shift
-    dst[0, :] = [(dst_w - 1) * 0.5, (dst_h - 1) * 0.5]
-    dst[1, :] = np.array([(dst_w - 1) * 0.5, (dst_h - 1) * 0.5]) + dst_dir
+    src[0, :] = center + scale_tmp * shift
+    src[1, :] = center + src_dir + scale_tmp * shift
+    dst[0, :] = [dst_h * 0.5, dst_w * 0.5]
+    dst[1, :] = np.array([dst_h * 0.5, dst_w * 0.5]) + dst_dir
 
     src[2:, :] = get_3rd_point(src[0, :], src[1, :])
     dst[2:, :] = get_3rd_point(dst[0, :], dst[1, :])
@@ -158,7 +161,7 @@ class SCHPDataset(data.Dataset):
 
 class LIPDataSet(data.Dataset):
     def __init__(self, root, dataset, crop_size=[384, 384], scale_factor=0.25,
-                 rotation_factor=30, ignore_label=255, transform=None, drop_factor=100):
+                 rotation_factor=30, ignore_label=255, flip_prob=0.5, transform=None, drop_factor=100):
         """
         :rtype:
         """
@@ -168,7 +171,7 @@ class LIPDataSet(data.Dataset):
         self.ignore_label = ignore_label
         self.scale_factor = scale_factor
         self.rotation_factor = rotation_factor
-        self.flip_prob = 0.5
+        self.flip_prob = flip_prob
         self.flip_pairs = [[0, 5], [1, 4], [2, 3], [11, 14], [12, 13], [10, 15]]
         self.transform = transform
         self.dataset = dataset
@@ -197,7 +200,7 @@ class LIPDataSet(data.Dataset):
             h = w * 1.0 / self.aspect_ratio
         elif w < self.aspect_ratio * h:
             w = h * self.aspect_ratio
-        scale = np.array([w * 1.0, h * 1.0], dtype=np.float32)
+        scale = np.array([h * 1.0, w * 1.0], dtype=np.float32)
 
         return center, scale
 
@@ -209,20 +212,21 @@ class LIPDataSet(data.Dataset):
         parsing_anno_path = os.path.join(self.root, self.dataset + '_segmentations', im_name + '.png')
 
         im = cv2.imread(im_path, cv2.IMREAD_COLOR)
-        if im.shape[1] < self.crop_size[0] or im.shape[2] < self.crop_size[1]:
-            # resize_shape = (im.shape[0], self.crop_size[0], self.crop_size[1])
-            im = cv2.resize(im, tuple(self.crop_size))
+        #         if im.shape[1] < self.crop_size[0] or im.shape[2] < self.crop_size[1]:
+        #             # resize_shape = (im.shape[0], self.crop_size[1], self.crop_size[0])
+        #             im = cv2.resize(im, tuple(self.crop_size))
         h, w, _ = im.shape
         parsing_anno = np.zeros((h, w), dtype=np.long)
 
         # Get center and scale
-        center, s = self._box2cs([0, 0, w - 1, h - 1])
+        center, s = self._box2cs([0, 0, h - 1, w - 1])
+        # print(center, s, 'center scale')
         r = 0
 
         if self.dataset != 'test':
             parsing_anno = cv2.imread(parsing_anno_path, cv2.IMREAD_GRAYSCALE)
 
-            if self.dataset == 'train' or self.dataset == 'trainval':
+            if self.dataset == 'train' or self.dataset == 'val':
 
                 sf = self.scale_factor
                 rf = self.rotation_factor
@@ -244,36 +248,23 @@ class LIPDataSet(data.Dataset):
                         parsing_anno[left_pos[0], left_pos[1]] = right_idx[i]
 
         trans = get_affine_transform(center, s, r, self.crop_size)
-        kp = self.keypoints.loc[self.keypoints[0] == im_name+'.jpg'].values[0]
-        # print(kp, im_name)
+        kp = self.keypoints.loc[self.keypoints[0] == im_name + '.jpg'].values[0]
         kp = kp[1:]
-        # print(kp)
         heatmap_shape = h
         heatmap = get_train_kp_heatmap(im.shape, kp)
         if heatmap is None:
-            # print('#'*15)
-            # print('#'*15)
-            # print(im_name)
-            # print('#'*15)
-            # print('#'*15)
             heatmap = get_train_kp_heatmap(im.shape, kp)
-            # if heatmap is None:
-                # print('#' * 15)
-                # print('#' * 15)
-                # print(im_name, index)
-                # print(kp)
-                # print('#' * 15)
-                # print('#' * 15)
 
-        input = cv2.warpAffine(
+        input_img = cv2.warpAffine(
             im,
             trans,
             (int(self.crop_size[1]), int(self.crop_size[0])),
             flags=cv2.INTER_LINEAR,
             borderMode=cv2.BORDER_CONSTANT,
             borderValue=(0, 0, 0))
+
         if heatmap is not None:
-            heatmap = heatmap.astype(np.uint8)
+            heatmap = cv2.merge((heatmap, heatmap, heatmap))
             heatmap = cv2.warpAffine(
                 heatmap,
                 trans,
@@ -281,15 +272,14 @@ class LIPDataSet(data.Dataset):
                 flags=cv2.INTER_LINEAR,
                 borderMode=cv2.BORDER_CONSTANT,
                 borderValue=(0, 0, 0))
-            heatmap = cv2.merge((heatmap,heatmap,heatmap)).transpose(2,0,1)
-            #             # heatmap = resize(heatmap, (heatmap_shape, heatmap_shape), anti_aliasing=True)
+        #             # heatmap = resize(heatmap, (heatmap_shape, heatmap_shape), anti_aliasing=True)
         else:
-            heatmap = np.eye(heatmap_shape)
-            heatmap = cv2.merge((heatmap, heatmap, heatmap)).transpose(2, 0, 1)
+            print('none')
+            heatmap = np.eye(input_img.shape[0])
+            heatmap = cv2.merge((heatmap, heatmap, heatmap))
         if self.transform:
-            input = self.transform(input)
-            heatmap = torch.from_numpy(heatmap).type(torch.float32)
-
+            input_img = self.transform(input_img)
+            heatmap = transforms.ToTensor()(heatmap).type(torch.float32)
         meta = {
             'name': im_name,
             'center': center,
@@ -301,7 +291,7 @@ class LIPDataSet(data.Dataset):
         }
 
         if self.dataset != 'train':
-            return input, meta, heatmap
+            return input_img, meta, heatmap
         else:
 
             label_parsing = cv2.warpAffine(
@@ -316,30 +306,9 @@ class LIPDataSet(data.Dataset):
 
             label_parsing = torch.from_numpy(label_parsing)
             label_edge = torch.from_numpy(label_edge)
-            # print('get from dataset:')
-            # print(input.shape, label_parsing.shape, label_edge.shape, heatmap.shape, im_name)
-            # for check in [input, heatmap]:
-            #     sh = check.shape
-            #     if sh[0] != 3:
-            #         print(sh, input.shape, label_parsing.shape, label_edge.shape, heatmap.shape, im_name)
-            #         raise NotImplementedError('not 3 ')
-            #     if sh[1] != 384:
-            #         print(sh, input.shape, label_parsing.shape, label_edge.shape, heatmap.shape, im_name)
-            #         # raise NotImplementedError('not 384 1')
-            #     if sh[2] != 384:
-            #         print(sh, input.shape, label_parsing.shape, label_edge.shape, heatmap.shape, im_name)
-            #         # raise NotImplementedError('not 384 2')
-            # for check in [label_parsing, label_edge]:
-            #     sh = check.shape
-            #     if sh[0] != 384:
-            #         print(sh, input.shape, label_parsing.shape, label_edge.shape, heatmap.shape, im_name)
-            #         # raise NotImplementedError('not 384 3')
-            #     if sh[1] != 384:
-            #         print(sh, input.shape, label_parsing.shape, label_edge.shape, heatmap.shape, im_name)
-            #         # raise NotImplementedError('not 384 4')
 
 
-            return input, label_parsing, label_edge, heatmap, meta
+            return input_img, label_parsing, label_edge, heatmap, meta
 
 
 def get_train_kp_heatmap(shape, kp):

@@ -211,11 +211,11 @@ class ResNet(nn.Module):
 
         super(ResNet, self).__init__()
         self.conv1 = conv3x3(3, 64, stride=2)
-        if with_my_bn:
-            # self.bn1 = MyBatchNorm2d(64)
-            self.bn1 = ConvBatchNorm2d(64)
-        else:
-            self.bn1 = nn.BatchNorm2d(64)
+        # if with_my_bn:
+        #     # self.bn1 = MyBatchNorm2d(64)
+        #     self.bn1 = ConvBatchNorm2d(64)
+        # else:
+        self.bn1 = nn.BatchNorm2d(64)
         self.relu1 = nn.ReLU(inplace=False)
         self.conv2 = conv3x3(64, 64)
         self.bn2 = nn.BatchNorm2d(64)
@@ -268,24 +268,14 @@ class ResNet(nn.Module):
         return nn.Sequential(*layers)
 
     def forward(self, x, heatmaps):
-        # print('forward')
-        # print(x.shape)
-        # print(heatmaps.shape)
-        # print(x.get_device())
-        # print(heatmaps.get_device())
-        # Parsing Branch
         if self.with_my_bn:
-            # print('heatmpas shape before ', heatmaps.shape)
             heatmaps = self.heatmap_conv1(heatmaps)
-            # print('heatmpas shape after ', heatmaps.shape)
             gamma = self.heatmap_conv2(heatmaps)
             beta = self.heatmap_conv3(heatmaps)
             x = self.conv1(x)
-            # print(gamma.shape)
-            # gamma = F.interpolate(gamma, x.shape)
-            # beta = F.interpolate(beta, x.shape)
-            x = self.relu1(self.bn1(x, gamma, beta))
-            # x = self.relu1(self.bn1(self.conv1(x), self.conv1(heatmaps)))
+            # x = self.bn1(self.conv1(x))
+            x = x * (gamma + 1) + beta
+            x = self.relu1(x)
         else:
             x = self.relu1(self.bn1(self.conv1(x)))
         x = self.relu2(self.bn2(self.conv2(x)))
@@ -440,5 +430,5 @@ class ConvBatchNorm2d(nn.BatchNorm2d):
         x = x - current_mean
         x = x / ((current_var + self.eps) ** .5)
         # print(x.shape, gamma.shape, beta.shape)
-        x = x * (gamma + 1) + beta
+
         return x
