@@ -23,10 +23,8 @@ import pandas as pd
 
 from scipy.stats import multivariate_normal
 from torch.utils import data
-from target_generation import generate_edge
 import torchvision.transforms as transforms
-
-
+from target_generation import generate_edge
 
 
 def get_3rd_point(a, b):
@@ -161,7 +159,7 @@ class SCHPDataset(data.Dataset):
 
 class LIPDataSet(data.Dataset):
     def __init__(self, root, dataset, crop_size=[384, 384], scale_factor=0.25,
-                 rotation_factor=30, ignore_label=255, flip_prob=0.5, transform=None, drop_factor=100):
+                 rotation_factor=30, ignore_label=255, flip_prob=0.5, transform=None, drop_factor=None):
         """
         :rtype:
         """
@@ -176,6 +174,7 @@ class LIPDataSet(data.Dataset):
         self.transform = transform
         self.dataset = dataset
         self.keypoints = pd.read_csv(root + f'/TrainVal_pose_annotations/lip_{dataset}_set.csv', header=None)
+        self.keypoints[0] = self.keypoints[0].astype(str)
 
         list_path = os.path.join(self.root, self.dataset + '_id.txt')
 
@@ -215,6 +214,8 @@ class LIPDataSet(data.Dataset):
         #         if im.shape[1] < self.crop_size[0] or im.shape[2] < self.crop_size[1]:
         #             # resize_shape = (im.shape[0], self.crop_size[1], self.crop_size[0])
         #             im = cv2.resize(im, tuple(self.crop_size))
+        if im.shape[-1] == 1:
+            im = cv2.cvtColor(im, cv2.COLOR_GRAY2RGB)
         h, w, _ = im.shape
         parsing_anno = np.zeros((h, w), dtype=np.long)
 
@@ -248,12 +249,36 @@ class LIPDataSet(data.Dataset):
                         parsing_anno[left_pos[0], left_pos[1]] = right_idx[i]
 
         trans = get_affine_transform(center, s, r, self.crop_size)
-        kp = self.keypoints.loc[self.keypoints[0] == im_name + '.jpg'].values[0]
-        kp = kp[1:]
-        heatmap_shape = h
-        heatmap = get_train_kp_heatmap(im.shape, kp)
-        if heatmap is None:
-            heatmap = get_train_kp_heatmap(im.shape, kp)
+        kp = self.keypoints.loc[self.keypoints[0] == im_name + '.jpg']
+        kp = np.array(kp.values[0])[1:]
+        kp = np.where(kp == kp, kp, -1).astype(np.float64)
+        heatmap_params = {
+            'h': h,
+            'w': w,
+            'center': center,
+            'r': r,
+            's': s,
+            'kp': kp,
+            'trans': trans,
+            'to_tensor_flag': self.transform is not None
+        }
+        # print(type(heatmap_params))
+        # for k in heatmap_params:
+        #     print(type(heatmap_params[k]))
+
+        def get_heatmap_by_radius(radius):
+            local_heatmap = get_train_kp_heatmap(h, w, kp, radius=radius)
+            local_heatmap = cv2.warpAffine(
+                local_heatmap,
+                trans,
+                (int(self.crop_size[1]), int(self.crop_size[0])),
+                flags=cv2.INTER_LINEAR,
+                borderMode=cv2.BORDER_CONSTANT,
+                borderValue=(0, 0, 0))
+            if self.transform:
+                local_heatmap = transforms.ToTensor()(local_heatmap).type(torch.float32)
+            return local_heatmap
+        heatmap = get_train_kp_heatmap(h, w, kp)
 
         input_img = cv2.warpAffine(
             im,
@@ -262,21 +287,23 @@ class LIPDataSet(data.Dataset):
             flags=cv2.INTER_LINEAR,
             borderMode=cv2.BORDER_CONSTANT,
             borderValue=(0, 0, 0))
+        heatmap = cv2.warpAffine(
+            heatmap,
+            trans,
+            (int(self.crop_size[1]), int(self.crop_size[0])),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=(0, 0, 0))
 
-        if heatmap is not None:
-            heatmap = cv2.merge((heatmap, heatmap, heatmap))
-            heatmap = cv2.warpAffine(
-                heatmap,
-                trans,
-                (int(self.crop_size[1]), int(self.crop_size[0])),
-                flags=cv2.INTER_LINEAR,
-                borderMode=cv2.BORDER_CONSTANT,
-                borderValue=(0, 0, 0))
-        #             # heatmap = resize(heatmap, (heatmap_shape, heatmap_shape), anti_aliasing=True)
-        else:
-            print('none')
-            heatmap = np.eye(input_img.shape[0])
-            heatmap = cv2.merge((heatmap, heatmap, heatmap))
+        #         for i in range(heatmap.shape[-1]):
+        #             heatmap[:,:, i] = cv2.warpAffine(
+        #                 heatmap[:,:, i],
+        #                 trans,
+        #                 (int(self.crop_size[1]), int(self.crop_size[0])),
+        #                 flags=cv2.INTER_LINEAR,
+        #                 borderMode=cv2.BORDER_CONSTANT,
+        #                 borderValue=(0, 0, 0))
+
         if self.transform:
             input_img = self.transform(input_img)
             heatmap = transforms.ToTensor()(heatmap).type(torch.float32)
@@ -290,7 +317,7 @@ class LIPDataSet(data.Dataset):
             'index': index
         }
 
-        if self.dataset != 'train':
+        if self.dataset != 'train' and self.dataset != 'val': #todo: delete val
             return input_img, meta, heatmap
         else:
 
@@ -306,27 +333,23 @@ class LIPDataSet(data.Dataset):
 
             label_parsing = torch.from_numpy(label_parsing)
             label_edge = torch.from_numpy(label_edge)
+            return input_img, label_parsing, label_edge, meta, heatmap, heatmap_params
 
 
-            return input_img, label_parsing, label_edge, heatmap, meta
-
-
-def get_train_kp_heatmap(shape, kp):
+def get_train_kp_heatmap(h, w, kp, radius=40, kp_num=16):
+    radius = int(radius)
     x = [kp[i] for i in range(0, len(kp), 3)]
     y = [kp[i] for i in range(1, len(kp), 3)]
-    bad_indexes = set()
-    for i in range(len(x)):
-        if np.isnan(x[i]) or np.isnan(y[i]):
-            bad_indexes.add(i)
-
-    x = [x[i] for i in range(len(x)) if i not in bad_indexes]
-    y = [y[i] for i in range(len(y)) if i not in bad_indexes]
-    pos = np.dstack(np.mgrid[0:shape[0]:1, 0:shape[1]:1])
-    heatmap = None
-    for x_i, y_i in zip(x, y):
-        rv = multivariate_normal(mean=[y_i, x_i], cov=40)
-        if heatmap is None:
-            heatmap = rv.pdf(pos) * 100
-        else:
-            heatmap += rv.pdf(pos) * 100
+    pos = np.dstack(np.mgrid[0:h:1, 0:w:1])
+    heatmap = np.zeros((h, w, kp_num))
+    for x_i, y_i, i in zip(x, y, list(range(kp_num))):
+        if x_i != -1 and y_i != -1:
+            if y_i >= h:
+                y_i -= 1
+            if x_i >= w:
+                x_i -= 1
+            if x_i >= w or y_i >= h:
+                continue
+            heatmap[int(y_i), int(x_i), i] = 1.0
+            heatmap[:, :, i] = cv2.GaussianBlur(heatmap[:, :, i], (radius + radius % 2 - 1, radius + radius % 2 - 1), 0)
     return heatmap

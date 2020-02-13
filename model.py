@@ -14,6 +14,11 @@
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+from datasets import get_train_kp_heatmap
+import cv2
+import torchvision.transforms as transforms
+import numpy as np
+from scipy.stats import multivariate_normal
 
 pretrained_settings = {
     'resnet101': {
@@ -205,7 +210,7 @@ class DecoderModule(nn.Module):
 
 
 class ResNet(nn.Module):
-    def __init__(self, block, layers, num_classes, batch_size, with_my_bn=False):
+    def __init__(self, block, layers, num_classes, batch_size, with_my_bn=False, crop_size=[384,384]):
 
         self.inplanes = 128
 
@@ -243,9 +248,18 @@ class ResNet(nn.Module):
         )
 
         self.with_my_bn = with_my_bn
-        self.heatmap_conv1 = conv3x3(3, 64, stride=2)
-        self.heatmap_conv2 = conv3x3(64, 64, stride=1)
-        self.heatmap_conv3 = conv3x3(64, 64, stride=1)
+        self.heatmap_conv01 = conv3x3(16, 64, stride=2)
+        self.heatmap_conv02 = conv3x3(64, 64, stride=1)
+        self.heatmap_conv03 = conv3x3(64, 64, stride=1)
+        self.heatmap_conv11 = conv3x3(16, 64, stride=2)
+        self.heatmap_conv12 = conv3x3(64, 64, stride=1)
+        self.heatmap_conv13 = conv3x3(64, 64, stride=1)
+        self.heatmap_conv21 = conv3x3(16, 64, stride=2)
+        self.heatmap_conv22 = conv3x3(64, 128, stride=1)
+        self.heatmap_conv23 = conv3x3(64, 128, stride=1)
+        self.radius = nn.Parameter(torch.tensor([3.7]))
+        self.crop_size = crop_size
+        self.batch_size = batch_size
 
     def _make_layer(self, block, planes, blocks, stride=1, dilation=1, multi_grid=1):
         downsample = None
@@ -267,19 +281,77 @@ class ResNet(nn.Module):
 
         return nn.Sequential(*layers)
 
-    def forward(self, x, heatmaps):
+    def get_heatmap_by_radius(self, params, radius):
+        heatm = torch.zeros((self.batch_size, 16, int(self.crop_size[1]), int(self.crop_size[0])))
+        for i in range(self.batch_size):
+            local_heatmap = self.get_train_kp_heatmap(params['h'][i], params['w'][i], params['kp'][i], radius=radius)
+            # print('trans', params['trans'][i])
+            local_heatmap = cv2.warpAffine(
+                local_heatmap,
+                params['trans'][i].cpu().numpy(),
+                (int(self.crop_size[1]), int(self.crop_size[0])),
+                flags=cv2.INTER_LINEAR,
+                borderMode=cv2.BORDER_CONSTANT,
+                borderValue=(0, 0, 0))
+            if params['to_tensor_flag'][i]:
+                local_heatmap = transforms.ToTensor()(local_heatmap).type(torch.float32)
+            heatm[i] = local_heatmap
+        return heatm.cuda()
+
+    def get_train_kp_heatmap(self, h, w, kp, radius=3.7, kp_num=16):
+        radius = int(torch.exp(radius))
+        x = [kp[i] for i in range(0, len(kp), 3)]
+        y = [kp[i] for i in range(1, len(kp), 3)]
+        # print(h, w, kp)
+        pos = np.dstack(np.mgrid[0:h:1, 0:w:1])
+        heatmap = np.zeros((h, w, kp_num))
+        for x_i, y_i, i in zip(x, y, list(range(kp_num))):
+            if x_i != -1 and y_i != -1:
+                if y_i >= h.item():
+                    y_i -= 1
+                if x_i >= w.item():
+                    x_i -= 1
+                if x_i >= w.item() or y_i >= h.item():
+                    continue
+                heatmap[int(y_i), int(x_i), i] = 1.0
+                heatmap[:, :, i] = cv2.GaussianBlur(heatmap[:, :, i], (radius + radius % 2 - 1, radius + radius % 2 - 1), 0)
+                # rv = multivariate_normal(mean=[y_i, x_i], cov=radius.cpu())
+                # heatmap[:, :, i] = rv.pdf(pos) * 100
+        return heatmap
+
+    def forward(self, x, heatmap_params):
+        print(self.radius)
         if self.with_my_bn:
-            heatmaps = self.heatmap_conv1(heatmaps)
-            gamma = self.heatmap_conv2(heatmaps)
-            beta = self.heatmap_conv3(heatmaps)
-            x = self.conv1(x)
-            # x = self.bn1(self.conv1(x))
+            heatmaps = self.get_heatmap_by_radius(heatmap_params, self.radius[0])
+            # print(heatmaps.shape)
+            actv = self.heatmap_conv01(heatmaps)
+            gamma = self.heatmap_conv02(actv)
+            beta = self.heatmap_conv03(actv)
+            # x = self.conv1(x)
+            x = self.bn1(self.conv1(x))
             x = x * (gamma + 1) + beta
             x = self.relu1(x)
+
+            actv = self.heatmap_conv11(heatmaps)
+            gamma = self.heatmap_conv12(actv)
+            beta = self.heatmap_conv13(actv)
+            # x = self.conv1(x)
+            x = self.bn2(self.conv2(x))
+            x = x * (gamma + 1) + beta
+            x = self.relu2(x)
+
+            actv = self.heatmap_conv21(heatmaps)
+            gamma = self.heatmap_conv22(actv)
+            beta = self.heatmap_conv23(actv)
+            # x = self.conv1(x)
+            x = self.bn3(self.conv3(x))
+            x = x * (gamma + 1) + beta
+            x = self.relu3(x)
+
         else:
             x = self.relu1(self.bn1(self.conv1(x)))
-        x = self.relu2(self.bn2(self.conv2(x)))
-        x = self.relu3(self.bn3(self.conv3(x)))
+            x = self.relu2(self.bn2(self.conv2(x)))
+            x = self.relu3(self.bn3(self.conv3(x)))
         x1 = self.maxpool(x)
         x2 = self.layer1(x1)
         x3 = self.layer2(x2)
@@ -312,8 +384,8 @@ def initialize_pretrained_model(model, settings, pretrained='./models/resnet101-
         model.load_state_dict(new_params)
 
 
-def network(num_classes=20, pretrained='./models/resnet101-imagenet.pth', batch_size=12, with_my_bn=False):
-    model = ResNet(Bottleneck, [3, 4, 23, 3], num_classes, batch_size,  with_my_bn=with_my_bn)
+def network(num_classes=20, pretrained='./models/resnet101-imagenet.pth', batch_size=12, with_my_bn=False, crop_size=[384,384]):
+    model = ResNet(Bottleneck, [3, 4, 23, 3], num_classes, batch_size=batch_size,  with_my_bn=with_my_bn, crop_size=crop_size)
     settings = pretrained_settings['resnet101']['imagenet']
     initialize_pretrained_model(model, settings, pretrained)
     return model

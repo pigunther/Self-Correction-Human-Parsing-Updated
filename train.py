@@ -172,7 +172,7 @@ def main():
     torch.backends.cudnn.deterministic = False
     torch.backends.cudnn.enabled = True
 
-    deeplab = Res_Deeplab(num_classes=args.num_classes, pretrained=None, batch_size=args.batch_size, with_my_bn=args.with_my_bn)
+    deeplab = Res_Deeplab(num_classes=args.num_classes, pretrained=None, batch_size=args.batch_size, with_my_bn=args.with_my_bn, crop_size=input_size)
 
     # dump_input = torch.rand((args.batch_size, 3, input_size[0], input_size[1]))
     # writer.add_graph(deeplab.cuda(), dump_input.cuda(), verbose=False)
@@ -181,7 +181,7 @@ def main():
     for i in saved_state_dict:
         i_parts = i.split('.')
         # print(i_parts)
-        if not i_parts[0] == 'fc' and i_parts[0][:2] != 'bn':
+        if not i_parts[0] == 'fc' and i_parts[0] != 'conv1':
             new_params['.'.join(i_parts[0:])] = saved_state_dict[i]
 
     deeplab.load_state_dict(new_params)
@@ -203,7 +203,7 @@ def main():
         normalize,
     ])
 
-    trainloader = data.DataLoader(LIPDataSet(args.data_dir, args.dataset, crop_size=input_size, transform=transform, rotation_factor=0, flip_prob=-0.1, scale_factor=0),
+    trainloader = data.DataLoader(LIPDataSet(args.data_dir, args.dataset, crop_size=input_size, transform=transform, rotation_factor=0, flip_prob=-0.1, scale_factor=0, drop_factor=8),
                                   batch_size=args.batch_size * len(gpus), shuffle=True, num_workers=2,
                                   pin_memory=True, drop_last=True)
 
@@ -229,7 +229,8 @@ def main():
             i_iter += len(trainloader) * epoch
             lr = adjust_learning_rate(optimizer, i_iter, total_iters)
 
-            images, labels, edges, heatmaps, meta = batch
+            # images, labels, edges, heatmaps, meta = batch
+            images, labels, edges, meta, heatmaps, heatmaps_param = batch
 
             labels = labels.long().cuda()
             edges = edges.long().cuda()
@@ -240,7 +241,7 @@ def main():
             # print(labels.get_device())
             # print(type(model))
 
-            preds = model(images, heatmaps)
+            preds = model(images, heatmaps_param)
             loss = criterion(preds, [labels, edges])
             optimizer.zero_grad()
             loss.backward()
@@ -250,28 +251,28 @@ def main():
                 writer.add_scalar('learning_rate', lr, i_iter)
                 writer.add_scalar('loss', loss.data.cpu().numpy(), i_iter)
 
-            if i_iter % 500 == 0:
-
-                images_inv = inv_preprocess(images, args.save_num_images)
-                labels_colors = decode_parsing(labels, args.save_num_images, args.num_classes, is_pred=False)
-                edges_colors = decode_parsing(edges, args.save_num_images, 2, is_pred=False)
-
-                if isinstance(preds, list):
-                    preds = preds[0]
-                preds_colors = decode_parsing(preds[0][-1], args.save_num_images, args.num_classes, is_pred=True)
-                pred_edges = decode_parsing(preds[1][-1], args.save_num_images, 2, is_pred=True)
-
-                img = vutils.make_grid(images_inv, normalize=False, scale_each=True)
-                lab = vutils.make_grid(labels_colors, normalize=False, scale_each=True)
-                pred = vutils.make_grid(preds_colors, normalize=False, scale_each=True)
-                edge = vutils.make_grid(edges_colors, normalize=False, scale_each=True)
-                pred_edge = vutils.make_grid(pred_edges, normalize=False, scale_each=True)
-
-                writer.add_image('Images/', img, i_iter)
-                writer.add_image('Labels/', lab, i_iter)
-                writer.add_image('Preds/', pred, i_iter)
-                writer.add_image('Edges/', edge, i_iter)
-                writer.add_image('PredEdges/', pred_edge, i_iter)
+            # if i_iter % 500 == 0:
+            #
+            #     images_inv = inv_preprocess(images, args.save_num_images)
+            #     labels_colors = decode_parsing(labels, args.save_num_images, args.num_classes, is_pred=False)
+            #     edges_colors = decode_parsing(edges, args.save_num_images, 2, is_pred=False)
+            #
+            #     if isinstance(preds, list):
+            #         preds = preds[0]
+            #     preds_colors = decode_parsing(preds[0][-1], args.save_num_images, args.num_classes, is_pred=True)
+            #     pred_edges = decode_parsing(preds[1][-1], args.save_num_images, 2, is_pred=True)
+            #
+            #     img = vutils.make_grid(images_inv, normalize=False, scale_each=True)
+            #     lab = vutils.make_grid(labels_colors, normalize=False, scale_each=True)
+            #     pred = vutils.make_grid(preds_colors, normalize=False, scale_each=True)
+            #     edge = vutils.make_grid(edges_colors, normalize=False, scale_each=True)
+            #     pred_edge = vutils.make_grid(pred_edges, normalize=False, scale_each=True)
+            #
+            #     writer.add_image('Images/', img, i_iter)
+            #     writer.add_image('Labels/', lab, i_iter)
+            #     writer.add_image('Preds/', pred, i_iter)
+            #     writer.add_image('Edges/', edge, i_iter)
+            #     writer.add_image('PredEdges/', pred_edge, i_iter)
 
             print('iter = {} of {} completed, loss = {}'.format(i_iter, total_iters, loss.data.cpu().numpy()))
 

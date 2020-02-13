@@ -63,7 +63,7 @@ def valid(model, valloader, input_size, num_samples, gpus):
     interp = torch.nn.Upsample(size=(input_size[0], input_size[1]), mode='bilinear', align_corners=True)
     with torch.no_grad():
         for index, batch in enumerate(valloader):
-            image, meta, heatmaps = batch
+            image, _, _, meta, heatmap, heatmap_params = batch
             num_images = image.size(0)
             if index % 10 == 0:
                 print('%d  processd' % (index * num_images))
@@ -77,11 +77,13 @@ def valid(model, valloader, input_size, num_samples, gpus):
             widths[idx:idx + num_images] = w
             heights[idx:idx + num_images] = h
 
-            outputs = model(image.cuda(), heatmaps)
+            outputs = model(image.cuda(), heatmap_params)
             if gpus > 1:
                 for output in outputs:
                     parsing = output[0][-1]
                     nums = len(parsing)
+                    print(nums)
+                    print(parsing.shape)
                     parsing = interp(parsing).data.cpu().numpy()
                     parsing = parsing.transpose(0, 2, 3, 1)  # NCHW NHWC
                     for i_ in range(nums):
@@ -127,7 +129,7 @@ def main():
         transforms.ToTensor(),
         normalize,
     ])
-    drop_factor = 1000
+    drop_factor = None
     lip_dataset = LIPDataSet(args.data_dir, 'val', crop_size=input_size, transform=transform, drop_factor=drop_factor, rotation_factor=0, flip_prob=-0.1, scale_factor=0)
     num_samples = len(lip_dataset)
 
