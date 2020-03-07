@@ -5,13 +5,14 @@ import torch
 from torchvision.ops import roi_align
 
 class AdaIN(torch.nn.Module):
-    def __init__(self, channels, norm=False):
+    def __init__(self, channels_in, channels_out, norm=True):
         super(AdaIN, self).__init__()
-        self.channels = channels
+        self.channels_in = channels_in
+        self.channels_out = channels_out
         self.norm = norm
 
-        self.affine_scale = torch.nn.Linear(channels, channels, bias=True)
-        self.affine_bias = torch.nn.Linear(channels, channels, bias=True)
+        self.affine_scale = torch.nn.Linear(channels_in, channels_out, bias=True)
+        self.affine_bias = torch.nn.Linear(channels_in, channels_out, bias=True)
 
     def forward(self, x, w):
         ys = self.affine_scale(w)
@@ -23,12 +24,10 @@ class AdaIN(torch.nn.Module):
         if self.norm:
             xm_mean = torch.mean(xm, dim=2, keepdims=True)
             xm_centered = xm - xm_mean
-            print('xm_centerd.shape', xm_centered.shape, 'is (12, 32, 9216)?')
             xm_std_rev = torch.rsqrt(torch.mean(torch.mul(xm_centered, xm_centered), dim=2, keepdims=True))  # 1 / std (rsqrt, not sqrt)
             xm_norm = xm_centered - xm_std_rev
         else:
             xm_norm = xm
-
         xm_scaled = xm_norm*ys + yb
         return torch.reshape(xm_scaled, x.shape)
 
@@ -48,8 +47,6 @@ class AppendCoordFeatures(torch.nn.Module):
 
     def get_coord_features(self, points, rows, cols, batch_size,
                            **ctx_kwarg):
-        print('-'*5, 'Append Coord Features')
-        print(rows, cols, batch_size, ctx_kwarg)
         row_array = torch.arange(start=0, end=rows, step=1, **ctx_kwarg)
         col_array = torch.arange(start=0, end=cols, step=1, **ctx_kwarg)
         coord_rows = torch.reshape(row_array, (1, 1, rows, 1)).repeat(1,1,1,cols)
@@ -58,13 +55,11 @@ class AppendCoordFeatures(torch.nn.Module):
         coord_cols = coord_cols.repeat(batch_size, 1,1,1)
 
 
-        coords = torch.cat((coord_rows, coord_cols), dim=1).type(torch.float32)
+        coords = torch.cat((coord_rows, coord_cols), dim=1).float().cuda()
 
         add_xy = (points * self.spatial_scale).unsqueeze(-1)
         add_xy = add_xy.repeat(1,1, rows*cols)
-        add_xy = torch.reshape(add_xy, shape=(add_xy.shape[0], add_xy.shape[1], rows, cols))
-        print(add_xy.dtype, coords.dtype, type(self.norm_radius), type(self.spatial_scale))
-
+        add_xy = torch.reshape(add_xy, shape=(add_xy.shape[0], add_xy.shape[1], rows, cols)).float()
         coords = (coords - add_xy) / (self.norm_radius * self.spatial_scale)
         if self.append_dist:
             dist = torch.sqrt(torch.sum(torch.mul(coords, coords), dim=1, keepdims=True))
@@ -81,7 +76,7 @@ class AppendCoordFeatures(torch.nn.Module):
         batch_size, rows, cols = self.xs[0], self.xs[2], self.xs[3]
         coord_features = self.get_coord_features(coords, rows, cols, batch_size,
                                                  **self._ctx_kwarg(x))
-        return torch.cat((coord_features, x), dim=1)
+        return torch.cat((coord_features.float(), x), dim=1)
 
 
 class ExtractQueryFeatures(torch.nn.Module):
@@ -104,7 +99,7 @@ class ExtractQueryFeatures(torch.nn.Module):
         ctx_kwarg = self._ctx_kwarg(coords)
         coords = torch.reshape(coords, shape=(-1, 2))
         idx = [i for i in range(coords.shape[1]-1, -1, -1)]
-        idx = torch.LongTensor(idx)
+        idx = torch.LongTensor(idx).cuda()
         coords = torch.index_select(coords, 1, idx)
 
         if self.extraction_method == 'ROIAlign':
@@ -113,17 +108,11 @@ class ExtractQueryFeatures(torch.nn.Module):
         else:
             coords2 = coords
         rois = torch.cat((coords, coords2), dim=1)
-        print(coords.shape, rois.shape)
-        print(batch_size, num_points)
         bi = torch.arange(start=0, end=batch_size, step=1, **ctx_kwarg)
-        print(bi)
         bi = bi.repeat(num_points)
         bi = torch.reshape(bi, shape=(-1, 1)).type(torch.float32)
-        print(bi.shape, rois.shape)
-        rois = torch.cat((bi, rois), dim=1)
-        print(x.shape)
+        rois = torch.cat((bi.cuda(), rois.float()), dim=1)
         w = roi_align(x, rois, (1, 1), spatial_scale=self.spatial_scale)
-        print(w.shape)
         w = torch.reshape(w, shape=(w.shape[0], -1))
 
         return w

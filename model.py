@@ -19,6 +19,7 @@ import cv2
 import torchvision.transforms as transforms
 import numpy as np
 from scipy.stats import multivariate_normal
+from ops import ExtractQueryFeatures, AppendCoordFeatures, AdaIN
 
 pretrained_settings = {
     'resnet101': {
@@ -229,6 +230,10 @@ class ResNet(nn.Module):
         self.bn3 = nn.BatchNorm2d(128)
         self.relu3 = nn.ReLU(inplace=False)
 
+        self.conv4 = conv3x3(131, 128)
+        self.bn4 = nn.BatchNorm2d(128)
+        self.relu4 = nn.ReLU(inplace=False)
+
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
 
         self.layer1 = self._make_layer(block, 64, layers[0])
@@ -248,18 +253,25 @@ class ResNet(nn.Module):
         )
 
         self.with_my_bn = with_my_bn
-        self.heatmap_conv01 = conv3x3(16, 64, stride=2)
-        self.heatmap_conv02 = conv3x3(64, 64, stride=1)
-        self.heatmap_conv03 = conv3x3(64, 64, stride=1)
-        self.heatmap_conv11 = conv3x3(16, 64, stride=2)
-        self.heatmap_conv12 = conv3x3(64, 64, stride=1)
-        self.heatmap_conv13 = conv3x3(64, 64, stride=1)
-        self.heatmap_conv21 = conv3x3(16, 64, stride=2)
-        self.heatmap_conv22 = conv3x3(64, 128, stride=1)
-        self.heatmap_conv23 = conv3x3(64, 128, stride=1)
-        self.radius = nn.Parameter(torch.tensor([3.7]))
+        # self.heatmap_conv01 = conv3x3(16, 64, stride=2)
+        # self.heatmap_conv02 = conv3x3(64, 64, stride=1)
+        # self.heatmap_conv03 = conv3x3(64, 64, stride=1)
+        # self.heatmap_conv11 = conv3x3(16, 64, stride=2)
+        # self.heatmap_conv12 = conv3x3(64, 64, stride=1)
+        # self.heatmap_conv13 = conv3x3(64, 64, stride=1)
+        # self.heatmap_conv21 = conv3x3(16, 64, stride=2)
+        # self.heatmap_conv22 = conv3x3(64, 128, stride=1)
+        # self.heatmap_conv23 = conv3x3(64, 128, stride=1)
+        self.radius = nn.Parameter(torch.tensor([42.0]))
         self.crop_size = crop_size
         self.batch_size = batch_size
+        self.num_points = 16
+
+        self.eqf = ExtractQueryFeatures(extraction_method='ROIAlign', spatial_scale=1.0)
+
+        self.add_coord_features = AppendCoordFeatures(norm_radius=42, spatial_scale=1.0)
+
+        self.adain = AdaIN(128, 128)
 
     def _make_layer(self, block, planes, blocks, stride=1, dilation=1, multi_grid=1):
         downsample = None
@@ -319,39 +331,34 @@ class ResNet(nn.Module):
                 # heatmap[:, :, i] = rv.pdf(pos) * 100
         return heatmap
 
+
     def forward(self, x, heatmap_params):
-        print(self.radius)
         if self.with_my_bn:
-            heatmaps = self.get_heatmap_by_radius(heatmap_params, self.radius[0])
-            # print(heatmaps.shape)
-            actv = self.heatmap_conv01(heatmaps)
-            gamma = self.heatmap_conv02(actv)
-            beta = self.heatmap_conv03(actv)
-            # x = self.conv1(x)
-            x = self.bn1(self.conv1(x))
-            x = x * (gamma + 1) + beta
-            x = self.relu1(x)
+            x = self.relu1(self.bn1(self.conv1(x)))
+            x = self.relu2(self.bn2(self.conv2(x)))
+            x = self.relu3(self.bn3(self.conv3(x)))
+            # torch.save(x, './saved/x_simple')
+            points = heatmap_params['kp']
+            self.num_points = points.shape[1]
+            w = self.eqf(x, points)
+            points = torch.reshape(points, shape=(-1, 2))
+            x = x.repeat(self.num_points, 1, 1, 1)
 
-            actv = self.heatmap_conv11(heatmaps)
-            gamma = self.heatmap_conv12(actv)
-            beta = self.heatmap_conv13(actv)
-            # x = self.conv1(x)
-            x = self.bn2(self.conv2(x))
-            x = x * (gamma + 1) + beta
-            x = self.relu2(x)
+            x = self.add_coord_features(x, points)
 
-            actv = self.heatmap_conv21(heatmaps)
-            gamma = self.heatmap_conv22(actv)
-            beta = self.heatmap_conv23(actv)
-            # x = self.conv1(x)
-            x = self.bn3(self.conv3(x))
-            x = x * (gamma + 1) + beta
-            x = self.relu3(x)
+            x = self.conv4(x)
+            x = self.adain(x, w)
 
+            x_new = torch.zeros((x.shape[0]//self.num_points, x.shape[1], x.shape[2], x.shape[3])).cuda()
+            for i in range(x.shape[0]//self.num_points):
+                x_new[i] = torch.sum(x[x.shape[0]//self.num_points*i:x.shape[0]//self.num_points*(i+1)], dim=0)
+            x = x_new
         else:
             x = self.relu1(self.bn1(self.conv1(x)))
             x = self.relu2(self.bn2(self.conv2(x)))
             x = self.relu3(self.bn3(self.conv3(x)))
+        # torch.save(x, './saved/x')
+        # raise NotImplementedError('save')
         x1 = self.maxpool(x)
         x2 = self.layer1(x1)
         x3 = self.layer2(x2)
@@ -364,6 +371,7 @@ class ResNet(nn.Module):
         # Fusion Branch
         x = torch.cat([parsing_fea, edge_fea], dim=1)
         fusion_result = self.fushion(x)
+
         return [[parsing_result, fusion_result], [edge_result]]
 
 

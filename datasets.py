@@ -252,6 +252,8 @@ class LIPDataSet(data.Dataset):
         kp = self.keypoints.loc[self.keypoints[0] == im_name + '.jpg']
         kp = np.array(kp.values[0])[1:]
         kp = np.where(kp == kp, kp, -1).astype(np.float64)
+        kp = kp.reshape((16, 3))
+        kp = kp[:, [0, 1]]
         heatmap_params = {
             'h': h,
             'w': w,
@@ -262,33 +264,9 @@ class LIPDataSet(data.Dataset):
             'trans': trans,
             'to_tensor_flag': self.transform is not None
         }
-        # print(type(heatmap_params))
-        # for k in heatmap_params:
-        #     print(type(heatmap_params[k]))
-
-        def get_heatmap_by_radius(radius):
-            local_heatmap = get_train_kp_heatmap(h, w, kp, radius=radius)
-            local_heatmap = cv2.warpAffine(
-                local_heatmap,
-                trans,
-                (int(self.crop_size[1]), int(self.crop_size[0])),
-                flags=cv2.INTER_LINEAR,
-                borderMode=cv2.BORDER_CONSTANT,
-                borderValue=(0, 0, 0))
-            if self.transform:
-                local_heatmap = transforms.ToTensor()(local_heatmap).type(torch.float32)
-            return local_heatmap
-        heatmap = get_train_kp_heatmap(h, w, kp)
 
         input_img = cv2.warpAffine(
             im,
-            trans,
-            (int(self.crop_size[1]), int(self.crop_size[0])),
-            flags=cv2.INTER_LINEAR,
-            borderMode=cv2.BORDER_CONSTANT,
-            borderValue=(0, 0, 0))
-        heatmap = cv2.warpAffine(
-            heatmap,
             trans,
             (int(self.crop_size[1]), int(self.crop_size[0])),
             flags=cv2.INTER_LINEAR,
@@ -306,7 +284,6 @@ class LIPDataSet(data.Dataset):
 
         if self.transform:
             input_img = self.transform(input_img)
-            heatmap = transforms.ToTensor()(heatmap).type(torch.float32)
         meta = {
             'name': im_name,
             'center': center,
@@ -318,7 +295,7 @@ class LIPDataSet(data.Dataset):
         }
 
         if self.dataset != 'train' and self.dataset != 'val': #todo: delete val
-            return input_img, meta, heatmap
+            return input_img, meta
         else:
 
             label_parsing = cv2.warpAffine(
@@ -333,13 +310,15 @@ class LIPDataSet(data.Dataset):
 
             label_parsing = torch.from_numpy(label_parsing)
             label_edge = torch.from_numpy(label_edge)
-            return input_img, label_parsing, label_edge, meta, heatmap, heatmap_params
+            return input_img, label_parsing, label_edge, meta, heatmap_params
 
 
 def get_train_kp_heatmap(h, w, kp, radius=40, kp_num=16):
     radius = int(radius)
-    x = [kp[i] for i in range(0, len(kp), 3)]
-    y = [kp[i] for i in range(1, len(kp), 3)]
+    x = kp[:, 0]
+    y = kp[:, 1]
+    # x = [kp[i] for i in range(0, len(kp), 3)]
+    # y = [kp[i] for i in range(1, len(kp), 3)]
     pos = np.dstack(np.mgrid[0:h:1, 0:w:1])
     heatmap = np.zeros((h, w, kp_num))
     for x_i, y_i, i in zip(x, y, list(range(kp_num))):

@@ -15,10 +15,8 @@ from datasets import LIPDataSet
 import torchvision.transforms as transforms
 import timeit
 from tensorboardX import SummaryWriter
-from utils.utils import decode_parsing, inv_preprocess
 from utils.criterion import CriterionAll
 from utils.encoding import DataParallelModel, DataParallelCriterion
-from torch.cuda._utils import _get_device_index
 
 start = timeit.default_timer()
 
@@ -225,12 +223,12 @@ def main():
     for epoch in range(args.start_epoch, args.epochs):
         model.train()
         for i_iter, batch in enumerate(trainloader):
-            print(i_iter, len(batch))
+            # print(i_iter, len(batch))
             i_iter += len(trainloader) * epoch
             lr = adjust_learning_rate(optimizer, i_iter, total_iters)
 
             # images, labels, edges, heatmaps, meta = batch
-            images, labels, edges, meta, heatmaps, heatmaps_param = batch
+            images, labels, edges, meta, heatmaps_param = batch
 
             labels = labels.long().cuda()
             edges = edges.long().cuda()
@@ -244,6 +242,9 @@ def main():
             preds = model(images, heatmaps_param)
             loss = criterion(preds, [labels, edges])
             optimizer.zero_grad()
+            # print('preds device', preds.device())
+            # print('this is loss obj', loss)
+
             loss.backward()
             optimizer.step()
             # break

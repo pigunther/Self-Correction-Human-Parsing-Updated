@@ -6,15 +6,15 @@ date
 CS_PATH='../lip-dataset/LIP'
 LR=1e-3
 WD=5e-4
-BS=6
-GPU_IDS=0,1,2,3
+BS=5
+GPU_IDS=2
 RESTORE_FROM='../lip-dataset/resnet101-imagenet.pth'
 INPUT_SIZE='384,384'
-SNAPSHOT_DIR='./snapshots_simple_all_conv'
+SNAPSHOT_DIR='./snapshots_adaptis'
 DATASET='train'
 NUM_CLASSES=20
 EPOCHS=45
-WITH_MY_BN=0
+WITH_MY_BN=1
 
 if [[ ! -e ${SNAPSHOT_DIR} ]]; then
     mkdir -p  ${SNAPSHOT_DIR}

@@ -63,7 +63,7 @@ def valid(model, valloader, input_size, num_samples, gpus):
     interp = torch.nn.Upsample(size=(input_size[0], input_size[1]), mode='bilinear', align_corners=True)
     with torch.no_grad():
         for index, batch in enumerate(valloader):
-            image, _, _, meta, heatmap, heatmap_params = batch
+            image, _, _, meta, heatmap_params = batch
             num_images = image.size(0)
             if index % 10 == 0:
                 print('%d  processd' % (index * num_images))
